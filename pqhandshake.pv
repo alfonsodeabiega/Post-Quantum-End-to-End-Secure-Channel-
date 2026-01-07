@@ -1,0 +1,202 @@
+(* ================================================================= *)
+(* PQ E2E Handshake – Symbolic Model (ProVerif 2.05)                 *)
+(* Version 5: Symmetrical mode key confirmation and transcript-bound *)
+(* Goals: Mutual authentication and key secrecy (symbolic)           *)
+(* ================================================================= *)
+
+free net : channel.
+
+free ID1 : bitstring.
+free ID2 : bitstring.
+
+free CTX  : bitstring.
+free INIT : bitstring.
+free RESP : bitstring.
+
+(* ---------------- Cryptographic abstractions ---------------- *)
+
+fun H(bitstring): bitstring.
+
+(* Transcript hash / binding term *)
+fun TH(bitstring,bitstring,bitstring,bitstring,bitstring,bitstring,bitstring,bitstring): bitstring [data].
+
+fun KDF(bitstring,bitstring,bitstring): bitstring.
+
+(* Signatures as constructor-only (verification by pattern matching) *)
+fun sign(bitstring, bitstring): bitstring.
+
+(* Key-confirmation MAC (symbolic) *)
+fun mac(bitstring, bitstring): bitstring.
+
+(* Binding terms *)
+fun B1(bitstring,bitstring,bitstring,bitstring,bitstring,bitstring): bitstring [data].
+fun B2(bitstring,bitstring,bitstring,bitstring,bitstring,bitstring,bitstring,bitstring): bitstring [data].
+
+(* Mensajes *)
+fun M1(bitstring, bitstring, bitstring, bitstring, bitstring): bitstring [data].  (* id1,id2,n1,ek1,sig1 *)
+fun M2(bitstring, bitstring, bitstring, bitstring, bitstring, bitstring): bitstring [data].  (* id1,id2,n1,n2,ek2,sig2 *)
+fun M3(bitstring): bitstring [data].  (* c12 *)
+fun M4(bitstring): bitstring [data].  (* c21 *)
+fun M5(bitstring): bitstring [data].  (* KC-I *)
+fun M6(bitstring): bitstring [data].  (* KC-R *)
+
+(* ---------------- KEM model ---------------- *)
+(* Importante: modelamos encapsulación con randomness explícito r *)
+fun dk(bitstring): bitstring [private].
+fun encap_c(bitstring, bitstring): bitstring.  (* (ek, r) -> ciphertext *)
+fun encap_k(bitstring, bitstring): bitstring.  (* (ek, r) -> shared key *)
+fun decaps(bitstring, bitstring): bitstring.
+
+equation forall ek:bitstring, r:bitstring;
+  decaps(dk(ek), encap_c(ek, r)) = encap_k(ek, r).
+
+(* ---------------- Long-term keys ---------------- *)
+
+free skD1 : bitstring [private].
+free skD2 : bitstring [private].
+
+(* ---------------- Key confirmation: tags por rol ---------------- *)
+(* Cambio clave: KC simétrico, transcript-bound y separado por rol *)
+free KCI : bitstring.
+free KCR : bitstring.
+fun tag(bitstring, bitstring): bitstring [data].  (* tag(th, KCI/KCR) *)
+
+(* ---------------- Events ---------------- *)
+
+event c1_start(bitstring, bitstring).
+event c2_start(bitstring, bitstring).
+
+event c1_auth(bitstring, bitstring, bitstring, bitstring, bitstring, bitstring).
+event c2_auth(bitstring, bitstring, bitstring, bitstring, bitstring, bitstring).
+(* (id1,id2,n1,n2,ek1,ek2) *)
+
+event c1_end(bitstring, bitstring, bitstring, bitstring, bitstring, bitstring, bitstring).
+event c2_end(bitstring, bitstring, bitstring, bitstring, bitstring, bitstring, bitstring).
+(* (id1,id2,n1,n2,ek1,ek2,ke2e) *)
+
+event session_key(bitstring).
+
+(* ---------------- Server (untrusted relay) ---------------- *)
+
+let Server =
+  ! ( in(net, x:bitstring); out(net, x) ).
+
+(* ---------------- Client 1 (Initiator) ---------------- *)
+
+let Client1(id1:bitstring, id2:bitstring) =
+  event c1_start(id1,id2);
+
+  new ek1: bitstring;
+  let dk1 = dk(ek1) in
+  new n1: bitstring;
+
+  let b1   = B1(CTX, INIT, id1, id2, n1, ek1) in
+  let sig1 = sign(skD1, H(b1)) in
+  out(net, M1(id1, id2, n1, ek1, sig1));
+
+  in(net, M2(id1r:bitstring, id2r:bitstring, n1r:bitstring, n2:bitstring, ek2:bitstring, sig2:bitstring));
+
+  if id1r = id1 then
+  if id2r = id2 then
+  if n1r  = n1 then
+
+  let b2 = B2(CTX, RESP, id1, id2, n1, n2, ek1, ek2) in
+  if sig2 = sign(skD2, H(b2)) then
+
+  event c1_auth(id1,id2,n1,n2,ek1,ek2);
+
+  (* KEM 1: iniciador encapsula hacia ek2 *)
+  new r12: bitstring;
+  let c12 = encap_c(ek2, r12) in
+  let k12 = encap_k(ek2, r12) in
+  out(net, M3(c12));
+
+  (* KEM 2: recibe ciphertext del responder hacia ek1 *)
+  in(net, M4(c21:bitstring));
+  let k21 = decaps(dk1, c21) in
+
+  (* transcript hash *)
+  let th   = TH(id1,id2,n1,n2,ek1,ek2,c12,c21) in
+  let ke2e = KDF(k12, k21, th) in
+
+  (* --------------------------------------------------------- *)
+  (* Key confirmation (KC-I): transcript-bound + tag por rol    *)
+  (* Antes: kcI = mac(ke2e, H(th))  (o mezclado con B1(...))    *)
+  (* Ahora: kcI depende de th y de KCI (separación de rol)      *)
+  (* --------------------------------------------------------- *)
+  let kcI = mac(ke2e, H(tag(th, KCI))) in
+  out(net, M5(kcI));
+
+  (* Recibe KC-R y valida simétricamente *)
+  in(net, M6(kcR:bitstring));
+  let expR = mac(ke2e, H(tag(th, KCR))) in
+  if kcR = expR then
+
+  event session_key(ke2e);
+  event c1_end(id1,id2,n1,n2,ek1,ek2,ke2e);
+  0.
+
+(* ---------------- Client 2 (Responder) ---------------- *)
+
+let Client2(id1:bitstring, id2:bitstring) =
+  event c2_start(id1,id2);
+
+  in(net, M1(id1r:bitstring, id2r:bitstring, n1:bitstring, ek1:bitstring, sig1:bitstring));
+
+  if id1r = id1 then
+  if id2r = id2 then
+
+  let b1 = B1(CTX, INIT, id1, id2, n1, ek1) in
+  if sig1 = sign(skD1, H(b1)) then
+
+  new ek2: bitstring;
+  let dk2 = dk(ek2) in
+  new n2: bitstring;
+
+  let b2   = B2(CTX, RESP, id1, id2, n1, n2, ek1, ek2) in
+  let sig2 = sign(skD2, H(b2)) in
+  out(net, M2(id1, id2, n1, n2, ek2, sig2));
+
+  event c2_auth(id1,id2,n1,n2,ek1,ek2);
+
+  (* recibe encapsulación del iniciador hacia ek2 *)
+  in(net, M3(c12:bitstring));
+  let k12 = decaps(dk2, c12) in
+
+  (* encapsula hacia ek1 *)
+  new r21: bitstring;
+  let c21 = encap_c(ek1, r21) in
+  let k21 = encap_k(ek1, r21) in
+  out(net, M4(c21));
+
+  (* transcript hash *)
+  let th   = TH(id1,id2,n1,n2,ek1,ek2,c12,c21) in
+  let ke2e = KDF(k12, k21, th) in
+
+  (* Verifica KC-I (simétrico y transcript-bound) *)
+  in(net, M5(kcI:bitstring));
+  let expI = mac(ke2e, H(tag(th, KCI))) in
+  if kcI = expI then
+
+  (* Envía KC-R (simétrico y separado por rol) *)
+  let kcR = mac(ke2e, H(tag(th, KCR))) in
+  out(net, M6(kcR));
+
+  event session_key(ke2e);
+  event c2_end(id1,id2,n1,n2,ek1,ek2,ke2e);
+  0.
+
+(* ---------------- Queries ---------------- *)
+
+query x:bitstring, y:bitstring, n1:bitstring, n2:bitstring, ek1:bitstring, ek2:bitstring, k:bitstring;
+  event(c1_end(x,y,n1,n2,ek1,ek2,k)) ==> inj-event(c2_auth(x,y,n1,n2,ek1,ek2)).
+
+query x:bitstring, y:bitstring, n1:bitstring, n2:bitstring, ek1:bitstring, ek2:bitstring, k:bitstring;
+  event(c2_end(x,y,n1,n2,ek1,ek2,k)) ==> inj-event(c1_auth(x,y,n1,n2,ek1,ek2)).
+
+(* Secrecía de clave: no debe existir una traza donde haya session_key(k) y el atacante conozca k *)
+query k:bitstring;
+  attacker(k) && event(session_key(k)).
+
+(* ---------------- Process ---------------- *)
+process ( Server | Client1(ID1,ID2) | Client2(ID1,ID2) )
