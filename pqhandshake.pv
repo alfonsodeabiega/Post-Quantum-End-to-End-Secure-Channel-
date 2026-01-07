@@ -32,7 +32,7 @@ fun mac(bitstring, bitstring): bitstring.
 fun B1(bitstring,bitstring,bitstring,bitstring,bitstring,bitstring): bitstring [data].
 fun B2(bitstring,bitstring,bitstring,bitstring,bitstring,bitstring,bitstring,bitstring): bitstring [data].
 
-(* Mensajes *)
+(* Messages *)
 fun M1(bitstring, bitstring, bitstring, bitstring, bitstring): bitstring [data].  (* id1,id2,n1,ek1,sig1 *)
 fun M2(bitstring, bitstring, bitstring, bitstring, bitstring, bitstring): bitstring [data].  (* id1,id2,n1,n2,ek2,sig2 *)
 fun M3(bitstring): bitstring [data].  (* c12 *)
@@ -55,8 +55,8 @@ equation forall ek:bitstring, r:bitstring;
 free skD1 : bitstring [private].
 free skD2 : bitstring [private].
 
-(* ---------------- Key confirmation: tags por rol ---------------- *)
-(* Cambio clave: KC simétrico, transcript-bound y separado por rol *)
+(* ----------------- Key confirmation: Tags by role ----------------- *)
+(* Key change: Symmetrical KC, transcript-bound, and separate by role *)
 free KCI : bitstring.
 free KCR : bitstring.
 fun tag(bitstring, bitstring): bitstring [data].  (* tag(th, KCI/KCR) *)
@@ -119,15 +119,15 @@ let Client1(id1:bitstring, id2:bitstring) =
   let th   = TH(id1,id2,n1,n2,ek1,ek2,c12,c21) in
   let ke2e = KDF(k12, k21, th) in
 
-  (* --------------------------------------------------------- *)
-  (* Key confirmation (KC-I): transcript-bound + tag por rol    *)
-  (* Antes: kcI = mac(ke2e, H(th))  (o mezclado con B1(...))    *)
-  (* Ahora: kcI depende de th y de KCI (separación de rol)      *)
-  (* --------------------------------------------------------- *)
+  (* ------------------------------------------------------------ *)
+  (* Key confirmation (KC-I): transcript-bound and tag by role    *)
+  (* Before: kcI = mac(ke2e, H(th))  (or mixed with B1(...))      *)
+  (* Now: kcI depends on th and of KCI (separation of roles)      *)
+  (* ------------------------------------------------------------ *)
   let kcI = mac(ke2e, H(tag(th, KCI))) in
   out(net, M5(kcI));
 
-  (* Recibe KC-R y valida simétricamente *)
+  (* Recibe KC-R and symmetrically validated *)
   in(net, M6(kcR:bitstring));
   let expR = mac(ke2e, H(tag(th, KCR))) in
   if kcR = expR then
@@ -136,7 +136,7 @@ let Client1(id1:bitstring, id2:bitstring) =
   event c1_end(id1,id2,n1,n2,ek1,ek2,ke2e);
   0.
 
-(* ---------------- Client 2 (Responder) ---------------- *)
+(* ---------------- Client 2 (Reply) ---------------- *)
 
 let Client2(id1:bitstring, id2:bitstring) =
   event c2_start(id1,id2);
@@ -159,11 +159,11 @@ let Client2(id1:bitstring, id2:bitstring) =
 
   event c2_auth(id1,id2,n1,n2,ek1,ek2);
 
-  (* recibe encapsulación del iniciador hacia ek2 *)
+  (* receives initiator encapsulation towards ek2 *)
   in(net, M3(c12:bitstring));
   let k12 = decaps(dk2, c12) in
 
-  (* encapsula hacia ek1 *)
+  (* encapsulation towards ek1 *)
   new r21: bitstring;
   let c21 = encap_c(ek1, r21) in
   let k21 = encap_k(ek1, r21) in
@@ -173,12 +173,12 @@ let Client2(id1:bitstring, id2:bitstring) =
   let th   = TH(id1,id2,n1,n2,ek1,ek2,c12,c21) in
   let ke2e = KDF(k12, k21, th) in
 
-  (* Verifica KC-I (simétrico y transcript-bound) *)
+  (* Check KC-I (symmetrical and transcript-bound) *)
   in(net, M5(kcI:bitstring));
   let expI = mac(ke2e, H(tag(th, KCI))) in
   if kcI = expI then
 
-  (* Envía KC-R (simétrico y separado por rol) *)
+  (* Send KC-R (symmetrical and separated by roles) *)
   let kcR = mac(ke2e, H(tag(th, KCR))) in
   out(net, M6(kcR));
 
